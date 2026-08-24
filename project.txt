@@ -1,0 +1,378 @@
+import pygame
+import random
+import sys
+
+# Initialize Pygame
+pygame.init()
+pygame.font.init()
+
+# Window Setup
+WIDTH, HEIGHT = 900, 650
+SCREEN = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Mini-Game Economy")
+CLOCK = pygame.time.Clock()
+
+# Colors
+BG_DARK = (24, 28, 36)
+CARD_BG = (38, 45, 58)
+PANEL_BG = (48, 56, 70)
+TEXT_WHITE = (240, 242, 245)
+ACCENT_BLUE = (70, 130, 240)
+ACCENT_GREEN = (46, 184, 114)
+ACCENT_GOLD = (245, 180, 40)
+ACCENT_RED = (220, 70, 70)
+BORDER_COLOR = (70, 80, 100)
+
+# Fonts
+FONT_TITLE = pygame.font.SysFont("arial", 28, bold=True)
+FONT_MED = pygame.font.SysFont("arial", 20, bold=True)
+FONT_SMALL = pygame.font.SysFont("arial", 16)
+
+# Player State
+coins = 50
+bank_balance = 0
+inventory = []
+current_state = "MAIN"
+message = "Welcome! Earn coins in Mini-Games and spend them in Shops."
+message_timer = 0
+
+# Game State Variables
+guessing_target = random.randint(1, 5)
+coin_flip_choice = None
+coin_flip_result = None
+
+# Shop Data
+SHOPS = {
+    "BAKERY": {
+        "title": "Bakery",
+        "items": [("Bread", 10), ("Cake", 25), ("Croissant", 40)]
+    },
+    "WEAPONRY": {
+        "title": "Weaponry",
+        "items": [("Iron Sword", 50), ("Shield", 40), ("Bow", 80)]
+    },
+    "PET_SHOP": {
+        "title": "Pet Shop",
+        "items": [("Goldfish", 30), ("Puppy", 100), ("Parrot", 120)]
+    },
+    "MYSTERY": {
+        "title": "Mystery Shop",
+        "items": [("Lucky Charm", 75), ("Magic Orb", 150), ("Crown", 300)]
+    }
+}
+
+
+class Button:
+    def __init__(self, x, y, w, h, text, color=ACCENT_BLUE, text_color=TEXT_WHITE):
+        self.rect = pygame.Rect(x, y, w, h)
+        self.text = text
+        self.color = color
+        self.text_color = text_color
+
+    def draw(self, surface):
+        mouse_pos = pygame.mouse.get_pos()
+        current_color = self.color
+        # Subtle hover effect
+        if self.rect.collidepoint(mouse_pos):
+            current_color = (
+                min(255, self.color[0] + 30),
+                min(255, self.color[1] + 30),
+                min(255, self.color[2] + 30)
+            )
+        
+        pygame.draw.rect(surface, current_color, self.rect, border_radius=8)
+        pygame.draw.rect(surface, BORDER_COLOR, self.rect, width=2, border_radius=8)
+        
+        txt_surface = FONT_MED.render(self.text, True, self.text_color)
+        txt_rect = txt_surface.get_rect(center=self.rect.center)
+        surface.blit(txt_surface, txt_rect)
+
+    def is_clicked(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            return self.rect.collidepoint(event.pos)
+        return False
+
+
+def set_message(txt):
+    global message, message_timer
+    message = txt
+    message_timer = pygame.time.get_ticks()
+
+
+def draw_header():
+    # Top Bar
+    header_rect = pygame.Rect(0, 0, WIDTH, 60)
+    pygame.draw.rect(SCREEN, CARD_BG, header_rect)
+    pygame.draw.line(SCREEN, BORDER_COLOR, (0, 60), (WIDTH, 60), 2)
+
+    # Coin & Bank Info
+    coin_txt = FONT_MED.render(f"Coins: {coins}", True, ACCENT_GOLD)
+    bank_txt = FONT_MED.render(f"Bank: {bank_balance}", True, ACCENT_GREEN)
+    SCREEN.blit(coin_txt, (20, 18))
+    SCREEN.blit(bank_txt, (180, 18))
+
+    # Message bar at bottom
+    if message:
+        msg_rect = pygame.Rect(20, HEIGHT - 45, WIDTH - 40, 35)
+        pygame.draw.rect(SCREEN, PANEL_BG, msg_rect, border_radius=6)
+        pygame.draw.rect(SCREEN, BORDER_COLOR, msg_rect, width=1, border_radius=6)
+        msg_txt = FONT_SMALL.render(message, True, TEXT_WHITE)
+        SCREEN.blit(msg_txt, (msg_rect.x + 15, msg_rect.y + 8))
+
+
+def draw_sidebar():
+    # Inventory Container
+    side_rect = pygame.Rect(650, 80, 230, 490)
+    pygame.draw.rect(SCREEN, CARD_BG, side_rect, border_radius=10)
+    pygame.draw.rect(SCREEN, BORDER_COLOR, side_rect, width=2, border_radius=10)
+
+    title = FONT_MED.render("Inventory", True, TEXT_WHITE)
+    SCREEN.blit(title, (side_rect.x + 15, side_rect.y + 15))
+    pygame.draw.line(SCREEN, BORDER_COLOR, (side_rect.x + 10, side_rect.y + 45), (side_rect.x + 220, side_rect.y + 45), 1)
+
+    if not inventory:
+        empty_txt = FONT_SMALL.render("(Empty)", True, (140, 150, 170))
+        SCREEN.blit(empty_txt, (side_rect.x + 15, side_rect.y + 60))
+    else:
+        for i, item in enumerate(inventory[-12:]):  # Display last 12 items
+            item_txt = FONT_SMALL.render(f"• {item}", True, TEXT_WHITE)
+            SCREEN.blit(item_txt, (side_rect.x + 15, side_rect.y + 60 + (i * 32)))
+
+
+# Navigation Buttons
+btn_back = Button(20, 520, 120, 40, "Back", ACCENT_RED)
+
+# Main Menu Buttons
+main_btns = {
+    "MINIGAMES": Button(50, 120, 250, 50, "Play Mini-Games", ACCENT_BLUE),
+    "STORES": Button(330, 120, 250, 50, "Visit Stores", ACCENT_BLUE),
+    "BANK": Button(50, 200, 250, 50, "Visit Bank", ACCENT_BLUE)
+}
+
+# Mini-Game Menu Buttons
+mg_btns = {
+    "GUESS": Button(50, 120, 250, 50, "Number Guessing", CARD_BG),
+    "FLIP": Button(330, 120, 250, 50, "Coin Flip", CARD_BG)
+}
+
+# Store Selector Buttons
+store_select_btns = {
+    "BAKERY": Button(50, 120, 250, 50, "1. Bakery", CARD_BG),
+    "WEAPONRY": Button(330, 120, 250, 50, "2. Weaponry", CARD_BG),
+    "PET_SHOP": Button(50, 190, 250, 50, "3. Pet Shop", CARD_BG),
+    "MYSTERY": Button(330, 190, 250, 50, "4. Mystery Shop", CARD_BG)
+}
+
+# Number Guessing Buttons
+guess_btns = [Button(50 + (i * 70), 180, 50, 50, str(i + 1), ACCENT_BLUE) for i in range(5)]
+
+# Coin Flip Buttons
+flip_heads = Button(50, 180, 120, 50, "Heads", ACCENT_BLUE)
+flip_tails = Button(190, 180, 120, 50, "Tails", ACCENT_BLUE)
+
+# Bank Buttons
+bank_dep_10 = Button(50, 150, 130, 45, "Deposit 10", ACCENT_GREEN)
+bank_dep_50 = Button(190, 150, 130, 45, "Deposit 50", ACCENT_GREEN)
+bank_wth_10 = Button(50, 210, 130, 45, "Withdraw 10", ACCENT_RED)
+bank_wth_50 = Button(190, 210, 130, 45, "Withdraw 50", ACCENT_RED)
+
+
+# Game Loop
+running = True
+while running:
+    SCREEN.fill(BG_DARK)
+    events = pygame.event.get()
+
+    for event in events:
+        if event.type == pygame.QUIT:
+            running = False
+
+    # Draw persistent UI
+    draw_header()
+    draw_sidebar()
+
+    # --- STATE: MAIN MENU ---
+    if current_state == "MAIN":
+        title = FONT_TITLE.render("Main Hub", True, TEXT_WHITE)
+        SCREEN.blit(title, (50, 80))
+
+        for key, btn in main_btns.items():
+            btn.draw(SCREEN)
+            for event in events:
+                if btn.is_clicked(event):
+                    current_state = key
+
+    # --- STATE: MINI-GAMES HUB ---
+    elif current_state == "MINIGAMES":
+        title = FONT_TITLE.render("Select a Mini-Game", True, TEXT_WHITE)
+        SCREEN.blit(title, (50, 80))
+
+        for key, btn in mg_btns.items():
+            btn.draw(SCREEN)
+            for event in events:
+                if btn.is_clicked(event):
+                    current_state = f"GAME_{key}"
+                    if key == "GUESS":
+                        guessing_target = random.randint(1, 5)
+
+        btn_back.draw(SCREEN)
+        for event in events:
+            if btn_back.is_clicked(event):
+                current_state = "MAIN"
+
+    # --- STATE: GUESSING GAME ---
+    elif current_state == "GAME_GUESS":
+        title = FONT_TITLE.render("Guessing Game (Prize: 20 Coins)", True, TEXT_WHITE)
+        subtitle = FONT_MED.render("Pick a number between 1 and 5:", True, TEXT_WHITE)
+        SCREEN.blit(title, (50, 80))
+        SCREEN.blit(subtitle, (50, 130))
+
+        for i, btn in enumerate(guess_btns):
+            btn.draw(SCREEN)
+            for event in events:
+                if btn.is_clicked(event):
+                    player_guess = i + 1
+                    if player_guess == guessing_target:
+                        coins += 20
+                        set_message(f"Correct! The number was {guessing_target}. You won 20 coins!")
+                    else:
+                        set_message(f"Wrong! The number was {guessing_target}. Try again!")
+                    guessing_target = random.randint(1, 5)
+
+        btn_back.draw(SCREEN)
+        for event in events:
+            if btn_back.is_clicked(event):
+                current_state = "MINIGAMES"
+
+    # --- STATE: COIN FLIP GAME ---
+    elif current_state == "GAME_FLIP":
+        title = FONT_TITLE.render("Coin Flip (Prize: 15 Coins)", True, TEXT_WHITE)
+        subtitle = FONT_MED.render("Choose Heads or Tails:", True, TEXT_WHITE)
+        SCREEN.blit(title, (50, 80))
+        SCREEN.blit(subtitle, (50, 130))
+
+        flip_heads.draw(SCREEN)
+        flip_tails.draw(SCREEN)
+
+        for event in events:
+            chosen = None
+            if flip_heads.is_clicked(event):
+                chosen = "Heads"
+            elif flip_tails.is_clicked(event):
+                chosen = "Tails"
+
+            if chosen:
+                outcome = random.choice(["Heads", "Tails"])
+                if chosen == outcome:
+                    coins += 15
+                    set_message(f"It landed on {outcome}! You won 15 coins!")
+                else:
+                    set_message(f"It landed on {outcome}! You lost.")
+
+        btn_back.draw(SCREEN)
+        for event in events:
+            if btn_back.is_clicked(event):
+                current_state = "MINIGAMES"
+
+    # --- STATE: STORES HUB ---
+    elif current_state == "STORES":
+        title = FONT_TITLE.render("Shopping District", True, TEXT_WHITE)
+        SCREEN.blit(title, (50, 80))
+
+        for key, btn in store_select_btns.items():
+            btn.draw(SCREEN)
+            for event in events:
+                if btn.is_clicked(event):
+                    current_state = f"STORE_{key}"
+
+        btn_back.draw(SCREEN)
+        for event in events:
+            if btn_back.is_clicked(event):
+                current_state = "MAIN"
+
+    # --- STATE: INDIVIDUAL SHOPS ---
+    elif current_state.startswith("STORE_"):
+        store_key = current_state.split("_")[1]
+        store_data = SHOPS[store_key]
+
+        title = FONT_TITLE.render(store_data["title"], True, TEXT_WHITE)
+        SCREEN.blit(title, (50, 80))
+
+        # Render Item Purchase Buttons
+        for i, (item_name, price) in enumerate(store_data["items"]):
+            y_pos = 130 + (i * 65)
+            pygame.draw.rect(SCREEN, CARD_BG, (50, y_pos, 530, 55), border_radius=8)
+            pygame.draw.rect(SCREEN, BORDER_COLOR, (50, y_pos, 530, 55), width=1, border_radius=8)
+
+            txt = FONT_MED.render(f"{item_name}", True, TEXT_WHITE)
+            prc = FONT_MED.render(f"{price} Coins", True, ACCENT_GOLD)
+            SCREEN.blit(txt, (70, y_pos + 15))
+            SCREEN.blit(prc, (280, y_pos + 15))
+
+            buy_btn = Button(450, y_pos + 8, 110, 38, "Buy", ACCENT_GREEN)
+            buy_btn.draw(SCREEN)
+
+            for event in events:
+                if buy_btn.is_clicked(event):
+                    if coins >= price:
+                        coins -= price
+                        inventory.append(item_name)
+                        set_message(f"Bought {item_name} for {price} coins!")
+                    else:
+                        set_message("Not enough coins!")
+
+        btn_back.draw(SCREEN)
+        for event in events:
+            if btn_back.is_clicked(event):
+                current_state = "STORES"
+
+    # --- STATE: BANK ---
+    elif current_state == "BANK":
+        title = FONT_TITLE.render("First National Bank", True, TEXT_WHITE)
+        SCREEN.blit(title, (50, 80))
+
+        bank_dep_10.draw(SCREEN)
+        bank_dep_50.draw(SCREEN)
+        bank_wth_10.draw(SCREEN)
+        bank_wth_50.draw(SCREEN)
+
+        for event in events:
+            if bank_dep_10.is_clicked(event):
+                if coins >= 10:
+                    coins -= 10
+                    bank_balance += 10
+                    set_message("Deposited 10 coins.")
+                else:
+                    set_message("Not enough pocket coins!")
+            elif bank_dep_50.is_clicked(event):
+                if coins >= 50:
+                    coins -= 50
+                    bank_balance += 50
+                    set_message("Deposited 50 coins.")
+                else:
+                    set_message("Not enough pocket coins!")
+            elif bank_wth_10.is_clicked(event):
+                if bank_balance >= 10:
+                    bank_balance -= 10
+                    coins += 10
+                    set_message("Withdrew 10 coins.")
+                else:
+                    set_message("Not enough bank funds!")
+            elif bank_wth_50.is_clicked(event):
+                if bank_balance >= 50:
+                    bank_balance -= 50
+                    coins += 50
+                    set_message("Withdrew 50 coins.")
+                else:
+                    set_message("Not enough bank funds!")
+
+        btn_back.draw(SCREEN)
+        for event in events:
+            if btn_back.is_clicked(event):
+                current_state = "MAIN"
+
+    pygame.display.flip()
+    CLOCK.tick(60)
+
+pygame.quit()
+sys.exit()
