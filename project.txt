@@ -8,14 +8,16 @@ pygame.font.init()
 
 # Window Setup
 WIDTH, HEIGHT = 900, 650
-SCREEN = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Mini-Game Economy")
+is_fullscreen = False
+SCREEN = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
+pygame.display.set_caption("My Game Economy")
 CLOCK = pygame.time.Clock()
 
 # Colors
 BG_DARK = (24, 28, 36)
 CARD_BG = (38, 45, 58)
 PANEL_BG = (48, 56, 70)
+INPUT_BG = (18, 22, 28)
 TEXT_WHITE = (240, 242, 245)
 ACCENT_BLUE = (70, 130, 240)
 ACCENT_GREEN = (46, 184, 114)
@@ -28,36 +30,66 @@ FONT_TITLE = pygame.font.SysFont("arial", 28, bold=True)
 FONT_MED = pygame.font.SysFont("arial", 20, bold=True)
 FONT_SMALL = pygame.font.SysFont("arial", 16)
 
-# Player State
+# Player & Game State
 coins = 50
 bank_balance = 0
 inventory = []
 current_state = "MAIN"
-message = "Welcome! Earn coins in Mini-Games and spend them in Shops."
-message_timer = 0
+message = "Welcome! Catch some fish or play pong to earn cash!"
 
-# Game State Variables
-guessing_target = random.randint(1, 5)
-coin_flip_choice = None
-coin_flip_result = None
+# Active Boost Parameters
+minigame_multiplier = 1.0  # Multiplies minigame earnings
+bank_divider = 5           # Lower is better (Interest = Balance / bank_divider)
+interest_interval = 60000  # Base 60 seconds (in ms)
+passive_income_rate = 0    # Coins earned per second
+last_passive_tick = pygame.time.get_ticks()
 
-# Shop Data
+# Interest Timer
+last_interest_time = pygame.time.get_ticks()
+
+# Bank Input State
+deposit_text = ""
+withdraw_text = ""
+active_input = None
+
+# --- FISHING STATE ---
+fishing_state = "WAITING"
+fish_wait_timer = 0
+fish_caught = None
+fish_types = [
+    {"name": "Tiny Guppy", "base_val": 10},
+    {"name": "Silver Bass", "base_val": 25},
+    {"name": "Golden Trout", "base_val": 50},
+    {"name": "Legendary Salmon", "base_val": 100}
+]
+
+# --- PING PONG STATE ---
+pong_ball_pos = [250, 250]
+pong_ball_vel = [4, 4]
+player_paddle_y = 200
+ai_paddle_y = 200
+PADDLE_W, PADDLE_H = 15, 80
+player_score = 0
+ai_score = 0
+
+# --- HUMAN FRIENDLY SHOPS DATA ---
 SHOPS = {
-    "BAKERY": {
-        "title": "Bakery",
-        "items": [("Bread", 10), ("Cake", 25), ("Croissant", 40)]
+    "UPGRADES": {
+        "title": "Upgrades & Perks",
+        "items": [
+            {"name": "Coffee", "cost": 40, "desc": "+50% Game Rewards", "type": "mg_mult", "val": 0.5},
+            {"name": "Coin Cat", "cost": 60, "desc": "+1 Coin / second passively", "type": "passive", "val": 1},
+            {"name": "Lucky Rod", "cost": 100, "desc": "+100% Game Rewards", "type": "mg_mult", "val": 1.0},
+            {"name": "Treasure Dog", "cost": 200, "desc": "+4 Coins / second passively", "type": "passive", "val": 4}
+        ]
     },
-    "WEAPONRY": {
-        "title": "Weaponry",
-        "items": [("Iron Sword", 50), ("Shield", 40), ("Bow", 80)]
-    },
-    "PET_SHOP": {
-        "title": "Pet Shop",
-        "items": [("Goldfish", 30), ("Puppy", 100), ("Parrot", 120)]
-    },
-    "MYSTERY": {
-        "title": "Mystery Shop",
-        "items": [("Lucky Charm", 75), ("Magic Orb", 150), ("Crown", 300)]
+    "BANK_SHOP": {
+        "title": "Bank Upgrades",
+        "items": [
+            {"name": "Express Counter", "cost": 80, "desc": "10s Faster Interest Payouts", "type": "bank_speed", "val": 10000},
+            {"name": "Vault Upgrade", "cost": 120, "desc": "Interest = Balance / 4", "type": "bank_rate", "val": 4},
+            {"name": "Smart Investor", "cost": 300, "desc": "Interest = Balance / 3", "type": "bank_rate", "val": 3}
+        ]
     }
 }
 
@@ -72,7 +104,6 @@ class Button:
     def draw(self, surface):
         mouse_pos = pygame.mouse.get_pos()
         current_color = self.color
-        # Subtle hover effect
         if self.rect.collidepoint(mouse_pos):
             current_color = (
                 min(255, self.color[0] + 30),
@@ -93,27 +124,45 @@ class Button:
         return False
 
 
+def toggle_fullscreen():
+    global SCREEN, is_fullscreen
+    is_fullscreen = not is_fullscreen
+    if is_fullscreen:
+        SCREEN = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+    else:
+        SCREEN = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
+
+
 def set_message(txt):
-    global message, message_timer
+    global message
     message = txt
-    message_timer = pygame.time.get_ticks()
+
+
+def reset_pong():
+    global pong_ball_pos, pong_ball_vel, player_paddle_y, ai_paddle_y
+    pong_ball_pos = [250, 250]
+    pong_ball_vel = [random.choice([4, -4]), random.choice([3, -3])]
+    player_paddle_y = 200
+    ai_paddle_y = 200
 
 
 def draw_header():
-    # Top Bar
-    header_rect = pygame.Rect(0, 0, WIDTH, 60)
+    surf_w = SCREEN.get_width()
+    header_rect = pygame.Rect(0, 0, surf_w, 60)
     pygame.draw.rect(SCREEN, CARD_BG, header_rect)
-    pygame.draw.line(SCREEN, BORDER_COLOR, (0, 60), (WIDTH, 60), 2)
+    pygame.draw.line(SCREEN, BORDER_COLOR, (0, 60), (surf_w, 60), 2)
 
-    # Coin & Bank Info
-    coin_txt = FONT_MED.render(f"Coins: {coins}", True, ACCENT_GOLD)
-    bank_txt = FONT_MED.render(f"Bank: {bank_balance}", True, ACCENT_GREEN)
+    coin_txt = FONT_MED.render(f"Cash: ${coins}", True, ACCENT_GOLD)
+    bank_txt = FONT_MED.render(f"Bank: ${bank_balance}", True, ACCENT_GREEN)
     SCREEN.blit(coin_txt, (20, 18))
     SCREEN.blit(bank_txt, (180, 18))
 
-    # Message bar at bottom
+    btn_fullscreen.rect.x = surf_w - 180
+    btn_fullscreen.draw(SCREEN)
+
+    surf_h = SCREEN.get_height()
     if message:
-        msg_rect = pygame.Rect(20, HEIGHT - 45, WIDTH - 40, 35)
+        msg_rect = pygame.Rect(20, surf_h - 45, surf_w - 40, 35)
         pygame.draw.rect(SCREEN, PANEL_BG, msg_rect, border_radius=6)
         pygame.draw.rect(SCREEN, BORDER_COLOR, msg_rect, width=1, border_radius=6)
         msg_txt = FONT_SMALL.render(message, True, TEXT_WHITE)
@@ -121,79 +170,105 @@ def draw_header():
 
 
 def draw_sidebar():
-    # Inventory Container
-    side_rect = pygame.Rect(650, 80, 230, 490)
+    surf_w = SCREEN.get_width()
+    side_x = max(650, surf_w - 250)
+    side_rect = pygame.Rect(side_x, 80, 230, 490)
     pygame.draw.rect(SCREEN, CARD_BG, side_rect, border_radius=10)
     pygame.draw.rect(SCREEN, BORDER_COLOR, side_rect, width=2, border_radius=10)
 
-    title = FONT_MED.render("Inventory", True, TEXT_WHITE)
+    title = FONT_MED.render("My Boosts", True, TEXT_WHITE)
     SCREEN.blit(title, (side_rect.x + 15, side_rect.y + 15))
     pygame.draw.line(SCREEN, BORDER_COLOR, (side_rect.x + 10, side_rect.y + 45), (side_rect.x + 220, side_rect.y + 45), 1)
 
     if not inventory:
-        empty_txt = FONT_SMALL.render("(Empty)", True, (140, 150, 170))
+        empty_txt = FONT_SMALL.render("(No Boosts Active)", True, (140, 150, 170))
         SCREEN.blit(empty_txt, (side_rect.x + 15, side_rect.y + 60))
     else:
-        for i, item in enumerate(inventory[-12:]):  # Display last 12 items
-            item_txt = FONT_SMALL.render(f"• {item}", True, TEXT_WHITE)
+        for i, item in enumerate(inventory[-12:]):
+            item_txt = FONT_SMALL.render(f"• {item}", True, ACCENT_GREEN)
             SCREEN.blit(item_txt, (side_rect.x + 15, side_rect.y + 60 + (i * 32)))
 
 
-# Navigation Buttons
+# Navigation & Interaction Buttons
 btn_back = Button(20, 520, 120, 40, "Back", ACCENT_RED)
+btn_fullscreen = Button(WIDTH - 180, 10, 160, 40, "Fullscreen", PANEL_BG)
 
-# Main Menu Buttons
 main_btns = {
-    "MINIGAMES": Button(50, 120, 250, 50, "Play Mini-Games", ACCENT_BLUE),
-    "STORES": Button(330, 120, 250, 50, "Visit Stores", ACCENT_BLUE),
-    "BANK": Button(50, 200, 250, 50, "Visit Bank", ACCENT_BLUE)
+    "MINIGAMES": Button(50, 120, 250, 50, "Play Games", ACCENT_BLUE),
+    "STORES": Button(330, 120, 250, 50, "Shops & Perks", ACCENT_BLUE),
+    "BANK": Button(50, 200, 250, 50, "The Bank", ACCENT_BLUE)
 }
 
-# Mini-Game Menu Buttons
 mg_btns = {
-    "GUESS": Button(50, 120, 250, 50, "Number Guessing", CARD_BG),
-    "FLIP": Button(330, 120, 250, 50, "Coin Flip", CARD_BG)
+    "FISHING": Button(50, 120, 250, 50, "Fishin' Hole", CARD_BG),
+    "PONG": Button(330, 120, 250, 50, "Ping Pong", CARD_BG)
 }
 
-# Store Selector Buttons
 store_select_btns = {
-    "BAKERY": Button(50, 120, 250, 50, "1. Bakery", CARD_BG),
-    "WEAPONRY": Button(330, 120, 250, 50, "2. Weaponry", CARD_BG),
-    "PET_SHOP": Button(50, 190, 250, 50, "3. Pet Shop", CARD_BG),
-    "MYSTERY": Button(330, 190, 250, 50, "4. Mystery Shop", CARD_BG)
+    "UPGRADES": Button(50, 120, 250, 50, "Upgrades & Perks", CARD_BG),
+    "BANK_SHOP": Button(330, 120, 250, 50, "Bank Upgrades", CARD_BG)
 }
 
-# Number Guessing Buttons
-guess_btns = [Button(50 + (i * 70), 180, 50, 50, str(i + 1), ACCENT_BLUE) for i in range(5)]
+btn_cast = Button(50, 400, 150, 50, "Cast Line", ACCENT_GREEN)
+btn_reel = Button(50, 400, 150, 50, "REEL IN!", ACCENT_GOLD)
 
-# Coin Flip Buttons
-flip_heads = Button(50, 180, 120, 50, "Heads", ACCENT_BLUE)
-flip_tails = Button(190, 180, 120, 50, "Tails", ACCENT_BLUE)
-
-# Bank Buttons
-bank_dep_10 = Button(50, 150, 130, 45, "Deposit 10", ACCENT_GREEN)
-bank_dep_50 = Button(190, 150, 130, 45, "Deposit 50", ACCENT_GREEN)
-bank_wth_10 = Button(50, 210, 130, 45, "Withdraw 10", ACCENT_RED)
-bank_wth_50 = Button(190, 210, 130, 45, "Withdraw 50", ACCENT_RED)
+bank_dep_btn = Button(320, 150, 120, 40, "Deposit", ACCENT_GREEN)
+bank_wth_btn = Button(320, 210, 120, 40, "Withdraw", ACCENT_RED)
+dep_box_rect = pygame.Rect(180, 150, 130, 40)
+wth_box_rect = pygame.Rect(180, 210, 130, 40)
 
 
-# Game Loop
+# Main Game Loop
 running = True
 while running:
+    current_time = pygame.time.get_ticks()
+    
+    # --- PASSIVE INCOME ---
+    if passive_income_rate > 0 and current_time - last_passive_tick >= 1000:
+        coins += passive_income_rate
+        last_passive_tick = current_time
+
+    # --- BANK INTEREST ---
+    time_passed = current_time - last_interest_time
+    if time_passed >= interest_interval:
+        interest = bank_balance // bank_divider
+        bank_balance += interest
+        set_message(f"Bank paid interest! Added ${interest} to your account.")
+        last_interest_time = current_time
+
     SCREEN.fill(BG_DARK)
     events = pygame.event.get()
 
     for event in events:
         if event.type == pygame.QUIT:
             running = False
+            
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_F11:
+                toggle_fullscreen()
+            
+            if current_state == "BANK" and active_input:
+                if event.key == pygame.K_BACKSPACE:
+                    if active_input == 'deposit':
+                        deposit_text = deposit_text[:-1]
+                    elif active_input == 'withdraw':
+                        withdraw_text = withdraw_text[:-1]
+                elif event.unicode.isdigit():
+                    if active_input == 'deposit' and len(deposit_text) < 7:
+                        deposit_text += event.unicode
+                    elif active_input == 'withdraw' and len(withdraw_text) < 7:
+                        withdraw_text += event.unicode
 
-    # Draw persistent UI
     draw_header()
     draw_sidebar()
 
-    # --- STATE: MAIN MENU ---
+    for event in events:
+        if btn_fullscreen.is_clicked(event):
+            toggle_fullscreen()
+
+    # --- MAIN MENU ---
     if current_state == "MAIN":
-        title = FONT_TITLE.render("Main Hub", True, TEXT_WHITE)
+        title = FONT_TITLE.render("The Hub", True, TEXT_WHITE)
         SCREEN.blit(title, (50, 80))
 
         for key, btn in main_btns.items():
@@ -202,9 +277,9 @@ while running:
                 if btn.is_clicked(event):
                     current_state = key
 
-    # --- STATE: MINI-GAMES HUB ---
+    # --- MINI-GAMES HUB ---
     elif current_state == "MINIGAMES":
-        title = FONT_TITLE.render("Select a Mini-Game", True, TEXT_WHITE)
+        title = FONT_TITLE.render("Pick a Game", True, TEXT_WHITE)
         SCREEN.blit(title, (50, 80))
 
         for key, btn in mg_btns.items():
@@ -212,71 +287,135 @@ while running:
             for event in events:
                 if btn.is_clicked(event):
                     current_state = f"GAME_{key}"
-                    if key == "GUESS":
-                        guessing_target = random.randint(1, 5)
+                    if key == "PONG":
+                        player_score = 0
+                        ai_score = 0
+                        reset_pong()
+                    elif key == "FISHING":
+                        fishing_state = "WAITING"
 
         btn_back.draw(SCREEN)
         for event in events:
             if btn_back.is_clicked(event):
                 current_state = "MAIN"
 
-    # --- STATE: GUESSING GAME ---
-    elif current_state == "GAME_GUESS":
-        title = FONT_TITLE.render("Guessing Game (Prize: 20 Coins)", True, TEXT_WHITE)
-        subtitle = FONT_MED.render("Pick a number between 1 and 5:", True, TEXT_WHITE)
+    # --- FISHING MINI-GAME ---
+    elif current_state == "GAME_FISHING":
+        title = FONT_TITLE.render("Fishin' Hole", True, TEXT_WHITE)
         SCREEN.blit(title, (50, 80))
-        SCREEN.blit(subtitle, (50, 130))
 
-        for i, btn in enumerate(guess_btns):
-            btn.draw(SCREEN)
+        pond_rect = pygame.Rect(50, 130, 530, 240)
+        pygame.draw.rect(SCREEN, (30, 90, 160), pond_rect, border_radius=12)
+        pygame.draw.rect(SCREEN, BORDER_COLOR, pond_rect, width=2, border_radius=12)
+
+        if fishing_state == "WAITING":
+            status_txt = FONT_MED.render("Click 'Cast Line' to throw your line!", True, TEXT_WHITE)
+            SCREEN.blit(status_txt, (150, 230))
+            btn_cast.draw(SCREEN)
+            
             for event in events:
-                if btn.is_clicked(event):
-                    player_guess = i + 1
-                    if player_guess == guessing_target:
-                        coins += 20
-                        set_message(f"Correct! The number was {guessing_target}. You won 20 coins!")
-                    else:
-                        set_message(f"Wrong! The number was {guessing_target}. Try again!")
-                    guessing_target = random.randint(1, 5)
+                if btn_cast.is_clicked(event):
+                    fishing_state = "CASTED"
+                    fish_wait_timer = current_time + random.randint(2000, 4500)
+                    set_message("Waiting for a bite...")
+
+        elif fishing_state == "CASTED":
+            status_txt = FONT_MED.render("Patience... waiting for a fish...", True, ACCENT_GOLD)
+            SCREEN.blit(status_txt, (170, 230))
+            
+            if current_time >= fish_wait_timer:
+                fishing_state = "WAITING_FOR_REEL"
+                fish_wait_timer = current_time + 1800
+                fish_caught = random.choices(fish_types, weights=[50, 30, 15, 5])[0]
+
+        elif fishing_state == "WAITING_FOR_REEL":
+            status_txt = FONT_TITLE.render("FISH ON! QUICK, REEL IT IN!", True, ACCENT_GOLD)
+            SCREEN.blit(status_txt, (110, 230))
+            btn_reel.draw(SCREEN)
+
+            for event in events:
+                if btn_reel.is_clicked(event):
+                    payout = int(fish_caught["base_val"] * minigame_multiplier)
+                    coins += payout
+                    set_message(f"You caught a {fish_caught['name']}! Made ${payout}!")
+                    fishing_state = "WAITING"
+
+            if current_time > fish_wait_timer:
+                set_message("Ah, it snapped your line and got away!")
+                fishing_state = "WAITING"
 
         btn_back.draw(SCREEN)
         for event in events:
             if btn_back.is_clicked(event):
                 current_state = "MINIGAMES"
 
-    # --- STATE: COIN FLIP GAME ---
-    elif current_state == "GAME_FLIP":
-        title = FONT_TITLE.render("Coin Flip (Prize: 15 Coins)", True, TEXT_WHITE)
-        subtitle = FONT_MED.render("Choose Heads or Tails:", True, TEXT_WHITE)
-        SCREEN.blit(title, (50, 80))
-        SCREEN.blit(subtitle, (50, 130))
+    # --- PING PONG MINI-GAME ---
+    elif current_state == "GAME_PONG":
+        title = FONT_TITLE.render("Ping Pong Match (First to 3 Points)", True, TEXT_WHITE)
+        SCREEN.blit(title, (50, 75))
 
-        flip_heads.draw(SCREEN)
-        flip_tails.draw(SCREEN)
+        court_rect = pygame.Rect(50, 120, 530, 360)
+        pygame.draw.rect(SCREEN, (20, 30, 45), court_rect, border_radius=8)
+        pygame.draw.rect(SCREEN, BORDER_COLOR, court_rect, width=2, border_radius=8)
+        pygame.draw.line(SCREEN, BORDER_COLOR, (315, 120), (315, 480), 2)
 
-        for event in events:
-            chosen = None
-            if flip_heads.is_clicked(event):
-                chosen = "Heads"
-            elif flip_tails.is_clicked(event):
-                chosen = "Tails"
+        mouse_y = pygame.mouse.get_pos()[1]
+        player_paddle_y = max(120, min(court_rect.bottom - PADDLE_H, mouse_y - PADDLE_H // 2))
 
-            if chosen:
-                outcome = random.choice(["Heads", "Tails"])
-                if chosen == outcome:
-                    coins += 15
-                    set_message(f"It landed on {outcome}! You won 15 coins!")
-                else:
-                    set_message(f"It landed on {outcome}! You lost.")
+        if pong_ball_pos[1] > ai_paddle_y + PADDLE_H // 2:
+            ai_paddle_y += 3
+        elif pong_ball_pos[1] < ai_paddle_y + PADDLE_H // 2:
+            ai_paddle_y -= 3
+        ai_paddle_y = max(120, min(court_rect.bottom - PADDLE_H, ai_paddle_y))
+
+        pong_ball_pos[0] += pong_ball_vel[0]
+        pong_ball_pos[1] += pong_ball_vel[1]
+
+        if pong_ball_pos[1] <= 125 or pong_ball_pos[1] >= court_rect.bottom - 10:
+            pong_ball_vel[1] *= -1
+
+        player_rect = pygame.Rect(60, player_paddle_y, PADDLE_W, PADDLE_H)
+        ai_rect = pygame.Rect(555, ai_paddle_y, PADDLE_W, PADDLE_H)
+        ball_rect = pygame.Rect(pong_ball_pos[0], pong_ball_pos[1], 12, 12)
+
+        if ball_rect.colliderect(player_rect) and pong_ball_vel[0] < 0:
+            pong_ball_vel[0] *= -1.1
+        elif ball_rect.colliderect(ai_rect) and pong_ball_vel[0] > 0:
+            pong_ball_vel[0] *= -1.1
+
+        if pong_ball_pos[0] < 50:
+            ai_score += 1
+            reset_pong()
+        elif pong_ball_pos[0] > 570:
+            player_score += 1
+            reset_pong()
+
+        if player_score >= 3:
+            payout = int(40 * minigame_multiplier)
+            coins += payout
+            set_message(f"Nice match! You won and made ${payout}!")
+            player_score, ai_score = 0, 0
+            current_state = "MINIGAMES"
+        elif ai_score >= 3:
+            set_message("The AI beat you this time! Try again?")
+            player_score, ai_score = 0, 0
+            current_state = "MINIGAMES"
+
+        pygame.draw.rect(SCREEN, ACCENT_BLUE, player_rect, border_radius=4)
+        pygame.draw.rect(SCREEN, ACCENT_RED, ai_rect, border_radius=4)
+        pygame.draw.ellipse(SCREEN, ACCENT_GOLD, ball_rect)
+
+        score_txt = FONT_MED.render(f"You: {player_score}   |   AI: {ai_score}", True, TEXT_WHITE)
+        SCREEN.blit(score_txt, (240, 490))
 
         btn_back.draw(SCREEN)
         for event in events:
             if btn_back.is_clicked(event):
                 current_state = "MINIGAMES"
 
-    # --- STATE: STORES HUB ---
+    # --- STORES HUB ---
     elif current_state == "STORES":
-        title = FONT_TITLE.render("Shopping District", True, TEXT_WHITE)
+        title = FONT_TITLE.render("Shops & Perk Outlets", True, TEXT_WHITE)
         SCREEN.blit(title, (50, 80))
 
         for key, btn in store_select_btns.items():
@@ -290,81 +429,141 @@ while running:
             if btn_back.is_clicked(event):
                 current_state = "MAIN"
 
-    # --- STATE: INDIVIDUAL SHOPS ---
+    # --- INDIVIDUAL STORES ---
     elif current_state.startswith("STORE_"):
-        store_key = current_state.split("_")[1]
+        store_key = current_state.replace("STORE_", "")
         store_data = SHOPS[store_key]
 
         title = FONT_TITLE.render(store_data["title"], True, TEXT_WHITE)
         SCREEN.blit(title, (50, 80))
 
-        # Render Item Purchase Buttons
-        for i, (item_name, price) in enumerate(store_data["items"]):
-            y_pos = 130 + (i * 65)
-            pygame.draw.rect(SCREEN, CARD_BG, (50, y_pos, 530, 55), border_radius=8)
-            pygame.draw.rect(SCREEN, BORDER_COLOR, (50, y_pos, 530, 55), width=1, border_radius=8)
+        for i, item in enumerate(store_data["items"]):
+            y_pos = 130 + (i * 70)
+            is_owned = item["name"] in inventory
 
-            txt = FONT_MED.render(f"{item_name}", True, TEXT_WHITE)
-            prc = FONT_MED.render(f"{price} Coins", True, ACCENT_GOLD)
-            SCREEN.blit(txt, (70, y_pos + 15))
-            SCREEN.blit(prc, (280, y_pos + 15))
+            pygame.draw.rect(SCREEN, CARD_BG, (50, y_pos, 530, 60), border_radius=8)
+            pygame.draw.rect(SCREEN, BORDER_COLOR, (50, y_pos, 530, 60), width=1, border_radius=8)
 
-            buy_btn = Button(450, y_pos + 8, 110, 38, "Buy", ACCENT_GREEN)
+            txt = FONT_MED.render(item["name"], True, TEXT_WHITE)
+            desc = FONT_SMALL.render(item["desc"], True, ACCENT_GOLD)
+            prc = FONT_MED.render(f"${item['cost']}", True, ACCENT_GREEN)
+            
+            SCREEN.blit(txt, (70, y_pos + 8))
+            SCREEN.blit(desc, (70, y_pos + 32))
+            SCREEN.blit(prc, (300, y_pos + 18))
+
+            btn_label = "Bought" if is_owned else "Buy"
+            btn_color = PANEL_BG if is_owned else ACCENT_GREEN
+            buy_btn = Button(450, y_pos + 10, 110, 40, btn_label, btn_color)
             buy_btn.draw(SCREEN)
 
             for event in events:
-                if buy_btn.is_clicked(event):
-                    if coins >= price:
-                        coins -= price
-                        inventory.append(item_name)
-                        set_message(f"Bought {item_name} for {price} coins!")
+                if buy_btn.is_clicked(event) and not is_owned:
+                    if coins >= item["cost"]:
+                        coins -= item["cost"]
+                        inventory.append(item["name"])
+                        
+                        b_type = item["type"]
+                        if b_type == "mg_mult":
+                            minigame_multiplier += item["val"]
+                        elif b_type == "bank_speed":
+                            interest_interval = max(10000, interest_interval - item["val"])
+                        elif b_type == "passive":
+                            passive_income_rate += item["val"]
+                        elif b_type == "bank_rate":
+                            bank_divider = min(bank_divider, item["val"])
+
+                        set_message(f"Unlocked: {item['name']}!")
                     else:
-                        set_message("Not enough coins!")
+                        set_message("You don't have enough cash for that!")
 
         btn_back.draw(SCREEN)
         for event in events:
             if btn_back.is_clicked(event):
                 current_state = "STORES"
 
-    # --- STATE: BANK ---
+    # --- BANK ---
     elif current_state == "BANK":
-        title = FONT_TITLE.render("First National Bank", True, TEXT_WHITE)
+        title = FONT_TITLE.render("Town Savings Bank", True, TEXT_WHITE)
         SCREEN.blit(title, (50, 80))
 
-        bank_dep_10.draw(SCREEN)
-        bank_dep_50.draw(SCREEN)
-        bank_wth_10.draw(SCREEN)
-        bank_wth_50.draw(SCREEN)
+        dep_label = FONT_MED.render("Deposit:", True, TEXT_WHITE)
+        wth_label = FONT_MED.render("Withdraw:", True, TEXT_WHITE)
+        SCREEN.blit(dep_label, (50, 158))
+        SCREEN.blit(wth_label, (50, 218))
+
+        dep_border = ACCENT_GOLD if active_input == 'deposit' else BORDER_COLOR
+        wth_border = ACCENT_GOLD if active_input == 'withdraw' else BORDER_COLOR
+
+        pygame.draw.rect(SCREEN, INPUT_BG, dep_box_rect, border_radius=6)
+        pygame.draw.rect(SCREEN, dep_border, dep_box_rect, width=2, border_radius=6)
+        
+        pygame.draw.rect(SCREEN, INPUT_BG, wth_box_rect, border_radius=6)
+        pygame.draw.rect(SCREEN, wth_border, wth_box_rect, width=2, border_radius=6)
+
+        dep_txt_surf = FONT_MED.render(deposit_text, True, TEXT_WHITE)
+        wth_txt_surf = FONT_MED.render(withdraw_text, True, TEXT_WHITE)
+        SCREEN.blit(dep_txt_surf, (dep_box_rect.x + 10, dep_box_rect.y + 8))
+        SCREEN.blit(wth_txt_surf, (wth_box_rect.x + 10, wth_box_rect.y + 8))
+
+        bank_dep_btn.draw(SCREEN)
+        bank_wth_btn.draw(SCREEN)
 
         for event in events:
-            if bank_dep_10.is_clicked(event):
-                if coins >= 10:
-                    coins -= 10
-                    bank_balance += 10
-                    set_message("Deposited 10 coins.")
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if dep_box_rect.collidepoint(event.pos):
+                    active_input = 'deposit'
+                elif wth_box_rect.collidepoint(event.pos):
+                    active_input = 'withdraw'
                 else:
-                    set_message("Not enough pocket coins!")
-            elif bank_dep_50.is_clicked(event):
-                if coins >= 50:
-                    coins -= 50
-                    bank_balance += 50
-                    set_message("Deposited 50 coins.")
+                    active_input = None
+
+            if bank_dep_btn.is_clicked(event):
+                if deposit_text.isdigit() and int(deposit_text) > 0:
+                    amount = int(deposit_text)
+                    if coins >= amount:
+                        coins -= amount
+                        bank_balance += amount
+                        set_message(f"Deposited ${amount} into your savings!")
+                        deposit_text = ""
+                    else:
+                        set_message("You don't have that much cash in your pocket!")
                 else:
-                    set_message("Not enough pocket coins!")
-            elif bank_wth_10.is_clicked(event):
-                if bank_balance >= 10:
-                    bank_balance -= 10
-                    coins += 10
-                    set_message("Withdrew 10 coins.")
+                    set_message("Enter a valid amount to deposit.")
+
+            elif bank_wth_btn.is_clicked(event):
+                if withdraw_text.isdigit() and int(withdraw_text) > 0:
+                    amount = int(withdraw_text)
+                    if bank_balance >= amount:
+                        bank_balance -= amount
+                        coins += amount
+                        set_message(f"Withdrew ${amount} from your account.")
+                        withdraw_text = ""
+                    else:
+                        set_message("You don't have that much stored in the bank!")
                 else:
-                    set_message("Not enough bank funds!")
-            elif bank_wth_50.is_clicked(event):
-                if bank_balance >= 50:
-                    bank_balance -= 50
-                    coins += 50
-                    set_message("Withdrew 50 coins.")
-                else:
-                    set_message("Not enough bank funds!")
+                    set_message("Enter a valid amount to withdraw.")
+
+        seconds_left = max(0, (interest_interval - time_passed) // 1000)
+        est_interest = bank_balance // bank_divider
+        
+        info_rect = pygame.Rect(50, 280, 530, 110)
+        pygame.draw.rect(SCREEN, PANEL_BG, info_rect, border_radius=8)
+        pygame.draw.rect(SCREEN, BORDER_COLOR, info_rect, width=1, border_radius=8)
+
+        timer_txt = FONT_MED.render(f"Next Interest Payment: {seconds_left}s", True, ACCENT_GOLD)
+        est_txt = FONT_SMALL.render(f"Estimated Interest (+Balance/{bank_divider}): +${est_interest}", True, TEXT_WHITE)
+        
+        SCREEN.blit(timer_txt, (70, 295))
+        SCREEN.blit(est_txt, (70, 325))
+
+        bar_bg = pygame.Rect(70, 355, 490, 15)
+        progress_w = int((time_passed / interest_interval) * 490)
+        bar_fill = pygame.Rect(70, 355, progress_w, 15)
+        
+        pygame.draw.rect(SCREEN, CARD_BG, bar_bg, border_radius=4)
+        pygame.draw.rect(SCREEN, ACCENT_GREEN, bar_fill, border_radius=4)
+        pygame.draw.rect(SCREEN, BORDER_COLOR, bar_bg, width=1, border_radius=4)
 
         btn_back.draw(SCREEN)
         for event in events:
